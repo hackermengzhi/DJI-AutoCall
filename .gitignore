@@ -24,3 +24,21 @@ backups/
 
 # Frontend dependencies are not used by the native DJOneHub page
 node_modules/
+
+# AutoCall machine-local data, model weights, recordings and credentials
+.local/
+.env
+.env.*
+*.safetensors
+*.aiff
+*.wav
+*.p12
+*.pfx
+*.pem
+*.key
+recordings/
+module-backups/
+call-history.json
+network-policy.json
+__pycache__/
+*.py[cod]

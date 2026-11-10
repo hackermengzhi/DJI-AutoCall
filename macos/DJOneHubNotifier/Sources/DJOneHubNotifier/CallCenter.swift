@@ -20,15 +20,19 @@ final class CallCenter: ObservableObject {
     private var lastActiveID: String?
     private var pollInFlight = false
     private let maVoAudio = VoiceAudioService()
+    let accessibility = AccessibleCallRelay()
     private var maVoAudioStarting = false
     private var maVoAudioCallID: String?
     private var maVoHostRegistered = false
+    private var maVoHostRegisteredAt = Date.distantPast
 
     /// 新来电（呼入且响铃/等待）时回调，用于弹窗/聚焦主窗口。
     var onIncoming: ((CallRecord) -> Void)?
 
     init(api: DJOneHubAPI) {
         self.api = api
+        accessibility.outputDeviceID = { [weak self] in self?.maVoAudio.speechOutputDeviceID }
+        maVoAudio.onDownlinkPCM = { [weak accessibility] pcm in accessibility?.receive(pcm) }
     }
 
     func start() {
@@ -42,6 +46,8 @@ final class CallCenter: ObservableObject {
     }
 
     func stop() {
+        accessibility.stopCaptions()
+        accessibility.stopSpeech()
         pollTask?.cancel()
         pollTask = nil
         maVoAudio.stop()
@@ -56,10 +62,11 @@ final class CallCenter: ObservableObject {
         do {
             let status = try await api.callStatus()
             isOnline = true
-            if !maVoHostRegistered {
+            if !maVoHostRegistered || Date().timeIntervalSince(maVoHostRegisteredAt) >= 10 {
                 do {
                     try await api.setMaVoAudioHostEnabled(true)
                     maVoHostRegistered = true
+                    maVoHostRegisteredAt = Date()
                 } catch {
                     // The backend can take tens of seconds to enumerate USB
                     // after a restart. Keep the old route until registration
@@ -70,6 +77,7 @@ final class CallCenter: ObservableObject {
             lastError = status.lastPollError
             let previousID = activeCall?.id
             activeCall = status.active
+            accessibility.setCallConnected(status.active?.state == "active" && maVoAudio.isRunning)
             history = status.history ?? []
 
             if status.active == nil, previousID != nil {
@@ -148,6 +156,8 @@ final class CallCenter: ObservableObject {
     }
 
     func hangup() {
+        accessibility.stopSpeech()
+        accessibility.stopCaptions()
         isMuted = false
         if isRecording { maVoAudio.stopRecording { _ in } }
         isRecording = false
@@ -166,10 +176,21 @@ final class CallCenter: ObservableObject {
         Task { _ = try? await api.sendDTMF(digit: digit) }
     }
 
+    func setSpeakerMonitoring(_ enabled: Bool) {
+        accessibility.monitorSpeaker = enabled
+        maVoAudio.setSpeakerMonitoring(enabled)
+    }
+
+    func setAccessibleTextMode(_ enabled: Bool) {
+        accessibility.textMode = enabled
+        maVoAudio.setMuted(enabled || isMuted)
+        if !enabled { accessibility.stopSpeech() }
+    }
+
     func toggleMute() {
         let muted = !isMuted
         isMuted = muted
-        maVoAudio.setMuted(muted)
+        maVoAudio.setMuted(muted || accessibility.textMode)
     }
 
     func toggleRecording() {
@@ -218,6 +239,7 @@ final class CallCenter: ObservableObject {
                         switch result {
                         case .success:
                             self.maVoAudio.setMediaEnabled(true)
+                            self.maVoAudio.setMuted(self.accessibility.textMode || self.isMuted)
                             self.lastActionError = nil
                         case .failure(let message):
                             self.lastActionError = "MaVo 音频启动失败：\(message)"

@@ -1,4 +1,7 @@
 import AppKit
+import AVFoundation
+import AudioToolbox
+import CoreAudio
 import Foundation
 import SwiftUI
 
@@ -6,8 +9,56 @@ import SwiftUI
 enum DJOneHubNotifierMain {
     @MainActor
     static func main() {
+        if CommandLine.arguments.count == 4,
+           ["--play-to-modem", "--play-to-modem-monitor"].contains(CommandLine.arguments[1]) {
+            do {
+                guard var device = UInt32(CommandLine.arguments[2]), device != 0 else { exit(2) }
+                let fileURL = URL(fileURLWithPath: CommandLine.arguments[3])
+                let completion = DispatchGroup()
+                var engines: [AVAudioEngine] = []
+                var players: [AVAudioPlayerNode] = []
+                let engine = AVAudioEngine()
+                guard let unit = engine.outputNode.audioUnit,
+                      AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+                                           kAudioUnitScope_Global, 0, &device, 4) == noErr else { exit(2) }
+                engines.append(engine)
+                if CommandLine.arguments[1] == "--play-to-modem-monitor" {
+                    var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+                    var localDevice: AudioObjectID = 0
+                    var size = UInt32(MemoryLayout<AudioObjectID>.size)
+                    guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address,
+                        0, nil, &size, &localDevice) == noErr,
+                        localDevice != 0, localDevice != device else { exit(2) }
+                    let monitor = AVAudioEngine()
+                    guard let monitorUnit = monitor.outputNode.audioUnit,
+                          AudioUnitSetProperty(monitorUnit, kAudioOutputUnitProperty_CurrentDevice,
+                            kAudioUnitScope_Global, 0, &localDevice, size) == noErr else { exit(2) }
+                    engines.append(monitor)
+                }
+                for outputEngine in engines {
+                    let file = try AVAudioFile(forReading: fileURL)
+                    let player = AVAudioPlayerNode()
+                    outputEngine.attach(player)
+                    outputEngine.connect(player, to: outputEngine.mainMixerNode, format: file.processingFormat)
+                    completion.enter()
+                    player.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) { _ in completion.leave() }
+                    try outputEngine.start()
+                    players.append(player)
+                }
+                let start = AVAudioTime(hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.15))
+                for player in players { player.play(at: start) }
+                let result = completion.wait(timeout: .now() + 110)
+                for outputEngine in engines { outputEngine.stop() }
+                exit(result == .success ? 0 : 2)
+            } catch { exit(2) }
+        }
         if CommandLine.arguments.contains("--self-test") {
             SelfTest.run()
+            return
+        }
+        if CommandLine.arguments.contains("--relay-audio-self-test") {
+            RelayAudioSelfTest.run()
             return
         }
         let app = NSApplication.shared
@@ -19,7 +70,7 @@ enum DJOneHubNotifierMain {
 }
 
 enum SelfTest {
-    static func run() {
+    @MainActor static func run() {
         precondition(NotificationText.displayNumber("  ") == "未知号码")
         let codeMessage = SMSMessage(
             sender: "10086",
@@ -35,7 +86,19 @@ enum SelfTest {
             timestamp: Date()
         )
         precondition(NotificationText.smsPreview(longMessage, limit: 8) == "第一行 第二行以…")
-        print("DJOneHubNotifier self-test passed")
+        precondition(AccessibleCallRelay.pcm8k([], rate: 24000).isEmpty)
+        precondition(AccessibleCallRelay.pcm8k([0, 1], rate: 0).isEmpty)
+        let silence = AccessibleCallRelay.pcm8k(Array(repeating: 0, count: 24001), rate: 24000)
+        precondition(silence.count == 16000 && silence.allSatisfy { $0 == 0 })
+        let clipped = AccessibleCallRelay.pcm8k([2, 2, -2, -2], rate: 8000)
+        precondition(Array(clipped.prefix(2)) == [255, 127])
+        precondition(Array(clipped.suffix(2)) == [1, 128])
+        let payload = Data("\"2026-11-10T14:54:01.123456789+13:00\"".utf8)
+        precondition((try? DJOneHubAPI.decoder.decode(Date.self, from: payload)) != nil)
+        let basicDate = Data("\"2026-11-10T14:54:01+13:00\"".utf8)
+        precondition((try? DJOneHubAPI.decoder.decode(Date.self, from: basicDate)) != nil)
+        AccessibleCallRelay.selfTestStopControl()
+        print("DJOneHubNotifier self-test passed (PCM, timestamps, and stop control)")
     }
 }
 
@@ -248,6 +311,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        callCenter.stop()
         callTimer?.invalidate()
         smsTimer?.invalidate()
         gpsTimer?.invalidate()
@@ -803,5 +867,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return nil
         }
         return arguments[index + 1]
+    }
+}
+
+
+@MainActor
+enum RelayAudioSelfTest {
+    static func run() {
+        let synth = AVSpeechSynthesizer()
+        let utterance = AVSpeechUtterance(string: "您好，我正在使用文字转语音与您通话。")
+        utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN")
+        var finished = false
+        var sampleCount = 0
+        var nonzero = false
+        synth.write(utterance) { buffer in
+            guard let pcm = buffer as? AVAudioPCMBuffer else { return }
+            sampleCount += Int(pcm.frameLength)
+            if let f = pcm.floatChannelData {
+                nonzero = nonzero || (0..<Int(pcm.frameLength)).contains { abs(f[0][$0]) > 0.001 }
+            } else if let p = pcm.int16ChannelData {
+                nonzero = nonzero || (0..<Int(pcm.frameLength)).contains { p[0][$0] != 0 }
+            }
+            if pcm.frameLength == 0 { finished = true }
+        }
+        let deadline = Date().addingTimeInterval(30)
+        while !finished && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        precondition(finished && sampleCount > 1000 && nonzero, "Chinese speech synthesis failed")
+        print("Chinese relay speech synthesis passed: \(sampleCount) audio frames")
     }
 }

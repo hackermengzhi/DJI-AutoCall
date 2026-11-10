@@ -2141,6 +2141,14 @@ func (a *app) ensureCellularDHCP() {
 	if a.demo || a.modem != nil {
 		return
 	}
+	a.networkPolicyMu.Lock()
+	policyErr := a.loadNetworkPolicyLocked()
+	forceOff := a.force4GOff
+	a.networkPolicyMu.Unlock()
+	if policyErr != nil || forceOff {
+		log.Printf("cellular DHCP repair skipped: cellular internet disabled or policy unavailable")
+		return
+	}
 	a.networkRepairMu.Lock()
 	defer a.networkRepairMu.Unlock()
 

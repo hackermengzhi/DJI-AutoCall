@@ -50,3 +50,19 @@ The source repository includes vendored dependencies under `third_party/` so the
 | multierr | `third_party/multierr/LICENSE.txt` |
 
 Dependencies fetched through Go modules retain their own licenses and copyright notices. This file is informational and does not replace any component's full license text.
+
+## DJI AutoCall additions
+
+DJI AutoCall is based on rogerbush007-a11y/DJOneHub-mac-enhanced at
+5b15eaec0e97dd9fa7b2abe54d0d1289c1e93054, retaining the upstream history,
+PolyForm Noncommercial license and required notices.
+
+Optional Pocket TTS is created by Kyutai. Native program release v4.0.1
+contains the version 3.3.0 macOS executable and its MIT LICENSE file.
+The setup script downloads this file alongside the executable.
+
+The pretrained voice assets are from Kyutai's pocket-tts-without-voice-cloning
+repository and are licensed under Creative Commons Attribution 4.0.
+Attribution: Kyutai, Pocket TTS, https://github.com/kyutai-labs/pocket-tts.
+The setup script pins the model and tokenizer revision and verifies every
+asset by SHA-256. Weights and generated speech are not committed here.

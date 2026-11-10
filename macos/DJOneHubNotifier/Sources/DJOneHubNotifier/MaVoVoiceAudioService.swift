@@ -8,6 +8,25 @@ import Foundation
 /// USB waits and sample-rate conversion never run on the CoreAudio render thread.
 final class VoiceAudioService {
     var onError: ((String) -> Void)?
+    var onDownlinkPCM: ((Data) -> Void)?
+    private var speakerMonitoring = false
+
+    func setSpeakerMonitoring(_ enabled: Bool) {
+        stateLock.withLock { speakerMonitoring = enabled }
+        playbackQueue.async { [weak self] in
+            guard let self else { return }
+            self.player?.stop()
+            self.scheduledPlaybackFrames = 0
+            if enabled { self.player?.play() }
+        }
+    }
+    var speechOutputDeviceID: UInt32? {
+        stateLock.withLock {
+            guard running, mediaEnabled, let activeUAC else { return nil }
+            let device = mavo_uac_probe_output_device_id(activeUAC)
+            return device == 0 ? nil : device
+        }
+    }
 
     private struct DeferredUACCleanup {
         let pointer: OpaquePointer
@@ -471,18 +490,9 @@ final class VoiceAudioService {
             engine.connect(player, to: engine.mainMixerNode, format: playbackFormat)
 
             let input = engine.inputNode
-            let voiceProcessingEnabled: Bool
-            do {
-                try input.setVoiceProcessingEnabled(true)
-                input.isVoiceProcessingBypassed = false
-                input.isVoiceProcessingAGCEnabled = true
-                voiceProcessingEnabled = input.isVoiceProcessingEnabled
-            } catch {
-                // Some split Bluetooth/USB device combinations cannot enter
-                // VoiceProcessingIO. Keep calls usable and rely on the local
-                // telephone-band conditioner instead.
-                voiceProcessingEnabled = false
-            }
+            // Keep the system output on its normal playback path. VoiceProcessingIO
+            // changes the hardware graph and can distort playback on split USB audio.
+            let voiceProcessingEnabled = false
             let inputFormat = input.outputFormat(forBus: 0)
             guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
                 throw VoiceAudioError.microphoneUnavailable
@@ -759,9 +769,12 @@ final class VoiceAudioService {
             sessionGeneration == session && running && mediaEnabled
         }
         guard shouldPlay else { return }
+        onDownlinkPCM?(pcm)
+        guard stateLock.withLock({ speakerMonitoring }) else { return }
         playbackQueue.async { [weak self] in
             guard let self,
                   self.isActiveSession(session),
+                  self.stateLock.withLock({ self.speakerMonitoring }),
                   let player = self.player else { return }
             let format = AVAudioFormat(
                 standardFormatWithSampleRate: self.modemSampleRate,

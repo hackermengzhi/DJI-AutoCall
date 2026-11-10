@@ -9,6 +9,7 @@ private enum PhoneTab: String, CaseIterable, Identifiable {
     case messages = "短信"
     case contacts = "通讯录"
     case settings = "设置"
+    case accessible = "辅助通话"
 
     var id: String { rawValue }
 
@@ -19,6 +20,7 @@ private enum PhoneTab: String, CaseIterable, Identifiable {
         case .messages: return "message.fill"
         case .contacts: return "person.crop.circle.fill"
         case .settings: return "gearshape.fill"
+        case .accessible: return "captions.bubble.fill"
         }
     }
 }
@@ -60,6 +62,8 @@ struct PhoneAppView: View {
                         })
                     case .settings:
                         SettingsView()
+                    case .accessible:
+                        AccessibleCallView(relay: calls.accessibility)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2494,6 +2498,7 @@ struct CallActiveView: View {
     let call: CallRecord
     @State private var now = Date()
     @State private var showKeypad = false
+    @State private var showAccessible = false
 
     private var ringing: Bool {
         call.state == "incoming" || call.state == "waiting"
@@ -2553,6 +2558,14 @@ struct CallActiveView: View {
                     .padding(.top, 6)
             }
             Spacer()
+
+            Button("字幕与文字代说", systemImage: "captions.bubble.fill") { showAccessible = true }
+                .buttonStyle(.borderedProminent)
+                .sheet(isPresented: $showAccessible) {
+                    AccessibleCallView(relay: calls.accessibility)
+                        .environmentObject(calls)
+                        .frame(minWidth: 460, minHeight: 620)
+                }
 
             if !ringing && showKeypad {
                 dtmfKeypad

@@ -30,5 +30,7 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>用于通过已连接的 4G 模块进行双向语音通话。</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>将电话对方的声音转换为本机字幕，帮助听障用户阅读通话内容。</string>
 </dict>
 </plist>
